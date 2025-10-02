@@ -39,7 +39,7 @@ PassPluginLibraryInfo getPassPluginInfo() {
 			return false;
 		});
 	};
-	return {LLVM_PLUGIN_API_VERSION, "FunctionListPass", "0.0.1", infoCallback};
+	return {LLVM_PLUGIN_API_VERSION, "ControlFlowFlattening", "0.0.1", infoCallback};
 }
 
 

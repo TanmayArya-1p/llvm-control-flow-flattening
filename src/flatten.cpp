@@ -1,7 +1,5 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CFG.h"
-#include "llvm/IR/Constant.h"
-#include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
@@ -11,7 +9,10 @@
 #include "llvm/Support/Casting.h"
 #include <cstdint>
 #include <bits/stdc++.h>
+#include <memory>
 #include <optional>
+#include <bits/stdc++.h>
+
 
 #include "utils.h"
 
@@ -45,11 +46,11 @@ void flatten(llvm::Function& func) {
     // make a switch instruction in dispatch block with default as cut off entry block
     llvm::SwitchInst* switchInst = builder.CreateSwitch(dispatch_var, &entry_block);
 
-    // create a set to track which blocks have already been assigned in switch cases
-    std::set<uint64_t> switch_assigned_blocks;
+    // create a switch manager to handle switch cases
+    auto switch_manager = std::make_unique<utils::SwitchManager>(*switchInst, builder);
 
     // if dispatch_var==0 then go to the cut off block of the entry block
-    switchInst->addCase(builder.getInt32(0), &entry_block);
+    switch_manager->insert_case_block(&entry_block);
 
     // rewire end of new entry block to the dispatch block
     llvm::BranchInst* new_entry_block_term_br = llvm::dyn_cast<llvm::BranchInst>(new_entry->getTerminator());
@@ -60,8 +61,6 @@ void flatten(llvm::Function& func) {
     // 2- blocks with children with phi instructions
     // 3- new entry block created above
     std::vector<std::pair<llvm::BasicBlock*, llvm::BranchInst*> > target_blocks;
-    uint64_t dispatch_id = 1;
-    std::map<llvm::BasicBlock*, uint64_t> block_dispatch_ids;
 
     for(auto &block : func) {
     	std::optional<const llvm::BranchInst*> terminator_br = utils::terminatorBR(block);
@@ -75,16 +74,12 @@ void flatten(llvm::Function& func) {
 
     for(auto& [block_ptr, term_br] : target_blocks) {
 	   	// if block not assigned an id then assign it
-	   	if(block_dispatch_ids.find(block_ptr) == block_dispatch_ids.end()) {
-	  		block_dispatch_ids[block_ptr] = dispatch_id++;
-	   	}
+		switch_manager->assign_index(block_ptr);
 
 
 	   	// assign ids to successor blocks
 		for(auto const& succ: llvm::successors(block_ptr)) {
-			if(block_dispatch_ids.find(succ) == block_dispatch_ids.end()) {
-				block_dispatch_ids[succ] = dispatch_id++;
-			}
+			switch_manager->assign_index(succ);
 		}
 
 		if(term_br->isConditional()) {
@@ -102,40 +97,32 @@ void flatten(llvm::Function& func) {
 			llvm::IRBuilder<> block_builder(block_ptr);
 
 			// use a select instruction to set dispatcher var
-			llvm::Value* dispatcher_var = block_builder.CreateSelect(cond, block_builder.getInt32(block_dispatch_ids[true_block]), block_builder.getInt32(block_dispatch_ids[false_block]));
+			llvm::Value* dispatcher_var = block_builder.CreateSelect(cond, block_builder.getInt32(switch_manager->get_index(true_block).value()), block_builder.getInt32(switch_manager->get_index(false_block).value()));
 			block_builder.CreateStore(dispatcher_var, dispatch_var_alloca);
 
 			// add unconditional branch to jump to dispatcher block
 			block_builder.CreateBr(dispatcher_block);
 
 			// add true block to switch instruction
-			if(switch_assigned_blocks.find(block_dispatch_ids[true_block]) == switch_assigned_blocks.end()) {
-				switchInst->addCase(builder.getInt32(block_dispatch_ids[true_block]), true_block);
-				switch_assigned_blocks.insert(block_dispatch_ids[true_block]);
-			}
+
+			switch_manager->insert_case_block(true_block);
 
 			// add false block to switch instruction
-			if(switch_assigned_blocks.find(block_dispatch_ids[false_block]) == switch_assigned_blocks.end()) {
-				switchInst->addCase(builder.getInt32(block_dispatch_ids[false_block]), false_block);
-				switch_assigned_blocks.insert(block_dispatch_ids[false_block]);
-			}
+			switch_manager->insert_case_block(false_block);
 
 
 		} else if(term_br->isUnconditional()) {
 			llvm::BasicBlock* successor = term_br->getSuccessor(0);
 
 			// add successor block to switch instruction
-			if(switch_assigned_blocks.find(block_dispatch_ids[successor]) == switch_assigned_blocks.end()) {
-				switchInst->addCase(builder.getInt32(block_dispatch_ids[successor]), successor);
-				switch_assigned_blocks.insert(block_dispatch_ids[successor]);
-			}
+			int64_t successor_id = switch_manager->insert_case_block(successor);
 
 			// delete trailing jump
 			term_br->eraseFromParent();
 
 			// create IR builder at end of current block
 			llvm::IRBuilder<> block_builder(block_ptr);
-			block_builder.CreateStore(block_builder.getInt32(block_dispatch_ids[successor]), dispatch_var_alloca);
+			block_builder.CreateStore(block_builder.getInt32(successor_id), dispatch_var_alloca);
 			block_builder.CreateBr(dispatcher_block);
 		} else {
 			assert(false && "wtf????");
