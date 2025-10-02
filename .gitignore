@@ -1,0 +1,5 @@
+build/*
+.cache
+test.ll
+test_flat.ll
+a.out
